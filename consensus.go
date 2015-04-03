@@ -13,7 +13,8 @@ import (
 
 var consensusAnnotations map[Annotation]bool = map[Annotation]bool{
 	// The file format we currently (try to) support.
-	Annotation{"network-status-consensus-3", "1", "0"}: true,
+	Annotation{"network-status-consensus-3", "1", "0"}:           true,
+	Annotation{"network-status-microdesc-consensus-3", "1", "0"}: true,
 }
 
 type RouterFlags struct {
@@ -56,6 +57,9 @@ type RouterStatus struct {
 	// The single fields of a "p" line.
 	Accept   bool
 	PortList string
+
+	// The single fields of a "m" line.
+	MicroDigest string
 }
 
 type Consensus struct {
@@ -246,10 +250,18 @@ func parseRouterFlags(flags []string) *RouterFlags {
 // error if there were any during parsing.  Parsing of the given string is
 // delayed until the returned function is executed.
 func LazyParseRawStatus(rawStatus string) (string, func() *RouterStatus, error) {
+	return lazyParseRawStatus(rawStatus, false)
+}
+
+func LazyParseRawStatusMicro(rawStatus string) (string, func() *RouterStatus, error) {
+	return lazyParseRawStatus(rawStatus, true)
+}
+
+func lazyParseRawStatus(rawStatus string, micro bool) (string, func() *RouterStatus, error) {
 
 	// Delay parsing of the router status until this function is executed.
 	getStatus := func() *RouterStatus {
-		_, f, _ := ParseRawStatus(rawStatus)
+		_, f, _ := parseRawStatus(rawStatus, micro)
 		return f()
 	}
 
@@ -271,6 +283,14 @@ func LazyParseRawStatus(rawStatus string) (string, func() *RouterStatus, error) 
 // router's fingerprint, a function which returns a RouterStatus, and an error
 // if there were any during parsing.
 func ParseRawStatus(rawStatus string) (string, func() *RouterStatus, error) {
+	return parseRawStatus(rawStatus, false)
+}
+
+func ParseRawStatusMicro(rawStatus string) (string, func() *RouterStatus, error) {
+	return parseRawStatus(rawStatus, true)
+}
+
+func parseRawStatus(rawStatus string, micro bool) (string, func() *RouterStatus, error) {
 
 	var status *RouterStatus = new(RouterStatus)
 	var err error
@@ -292,16 +312,23 @@ func ParseRawStatus(rawStatus string) (string, func() *RouterStatus, error) {
 				return "", nil, err
 			}
 
-			status.Digest, err = Base64ToString(words[3])
-			if err != nil {
-				return "", nil, err
+			// i'm so sorry
+			var microFix int
+			if !micro {
+				microFix = 0
+				status.Digest, err = Base64ToString(words[3])
+				if err != nil {
+					return "", nil, err
+				}
+			} else {
+				microFix = 1
 			}
 
-			time, _ := time.Parse(publishedTimeLayout, strings.Join(words[4:6], " "))
+			time, _ := time.Parse(publishedTimeLayout, strings.Join(words[4-microFix:6-microFix], " "))
 			status.Publication = time
-			status.Address = net.ParseIP(words[6])
-			status.ORPort = StringToPort(words[7])
-			status.DirPort = StringToPort(words[8])
+			status.Address = net.ParseIP(words[6-microFix])
+			status.ORPort = StringToPort(words[7-microFix])
+			status.DirPort = StringToPort(words[8-microFix])
 
 		case "s":
 			status.Flags = *parseRouterFlags(words[1:])
@@ -321,6 +348,9 @@ func ParseRawStatus(rawStatus string) (string, func() *RouterStatus, error) {
 				status.Accept = false
 			}
 			status.PortList = strings.Join(words[2:], " ")
+
+		case "m":
+			status.MicroDigest = words[1]
 		}
 	}
 
@@ -354,15 +384,23 @@ func extractStatusEntry(blurb string) (string, bool, error) {
 // parsing was successful.  If there were any errors, an error string is
 // returned.  If the lazy argument is set to true, parsing of the router
 // statuses is delayed until they are accessed.
-func parseConsensusFile(fileName string, lazy bool) (*Consensus, error) {
+func parseConsensusFile(fileName string, lazy bool, micro bool) (*Consensus, error) {
 
 	var consensus = NewConsensus()
 	var statusParser func(string) (string, func() *RouterStatus, error)
 
 	if lazy {
-		statusParser = LazyParseRawStatus
+		if micro {
+			statusParser = LazyParseRawStatusMicro
+		} else {
+			statusParser = LazyParseRawStatus
+		}
 	} else {
-		statusParser = ParseRawStatus
+		if micro {
+			statusParser = ParseRawStatusMicro
+		} else {
+			statusParser = ParseRawStatus
+		}
 	}
 
 	fd, err := os.Open(fileName)
@@ -405,7 +443,12 @@ func parseConsensusFile(fileName string, lazy bool) (*Consensus, error) {
 // recommended as long as you won't access more than ~50% of all statuses.
 func LazilyParseConsensusFile(fileName string) (*Consensus, error) {
 
-	return parseConsensusFile(fileName, true)
+	return parseConsensusFile(fileName, true, false)
+}
+
+func LazilyParseMicroConsensusFile(fileName string) (*Consensus, error) {
+
+	return parseConsensusFile(fileName, true, true)
 }
 
 // ParseConsensusFile parses the given file and returns a network consensus if
@@ -415,5 +458,10 @@ func LazilyParseConsensusFile(fileName string) (*Consensus, error) {
 // long as you will access most of all statuses.
 func ParseConsensusFile(fileName string) (*Consensus, error) {
 
-	return parseConsensusFile(fileName, false)
+	return parseConsensusFile(fileName, false, false)
+}
+
+func ParseMicroConsensusFile(fileName string) (*Consensus, error) {
+
+	return parseConsensusFile(fileName, false, true)
 }
